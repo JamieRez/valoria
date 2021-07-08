@@ -10,9 +10,9 @@ const request = require('request');
 const herokuKey = process.env.HEROKU_API_KEY;
 const {Storage} = require('@google-cloud/storage');
 const storage = new Storage();
-const servers = require('./servers.json');
 const isLocal = process.env.PORT ? true : false;
 const port = process.env.PORT || '8000';
+const ioclient = require("socket.io-client");
 
 const disabledPaths = {
   [__dirname + "/app"]: true,
@@ -49,9 +49,9 @@ module.exports = class Valoria {
       if(!thisVal.url){
         thisVal.url = req.protocol + '://' + req.get('host') + req.originalUrl;
         thisVal.server.url = thisVal.url;
-        await thisVal.saveFileData('server.json', JSON.stringify(thisVal.server));
-        console.log(thisVal.url);
-        console.log("TIME TO CONNECT");
+        await thisVal.saveFileData('server.json', thisVal.server);
+        await thisVal.loadAllServers();
+        await thisVal.joinServerNetwork();
       }
       next();
     });
@@ -70,6 +70,7 @@ module.exports = class Valoria {
     this.range = null;
     this.above = {};
     this.below = {};
+    this.servers = {};
     this.setup();
   }
 
@@ -84,19 +85,9 @@ module.exports = class Valoria {
       await thisVal.generateServerCredentials();
     }
     if(thisVal.server.url) {
-      await axios.get(thisVal.server.url); //Validates server url
+     axios.get(thisVal.server.url); //Validates server url
     }
-    // try {
-    //   await thisVal.loadAllServers();
-    // } catch (e){
-    //   console.log(e);
-    // }
-    // try {
-    //   await thisVal.joinServerNetwork();
-    // } catch(e){
-    //   console.log("Could not join server network");
-    //   console.log(e);
-    // }
+    thisVal.setupSocketServer();
   }
 
   async getFileData(path){
@@ -123,6 +114,9 @@ module.exports = class Valoria {
   async saveFileData(path, data){
     const thisVal = this;
     return new Promise( async(res, rej) => {
+      if(typeof data == "object"){
+        data = JSON.stringify(data, null, 2);
+      }
       try{
         if(thisVal.bucket){
           await thisVal.bucket.file(path).save(data);
@@ -140,6 +134,47 @@ module.exports = class Valoria {
     const thisVal = this;
     return new Promise(async(res, rej) => {
       
+    })
+  }
+
+  async setupSocketServer(){
+    const thisVal = this;
+    thisVal.io.on("connection", async (socket) => {
+
+      socket.on("Load all servers", async () => {
+        const servers = await this.getFileData("servers.json");
+        socket.emit("Load all servers", servers);
+      })
+
+      socket.on("disconnect", () => {
+        if(online[socket.userId]) delete online[socket.userId];
+        if(authenticating[socket.userId]) delete authenticating[socket.userId];
+      })
+
+    })
+  }
+
+  async loadAllServers(){
+    const thisVal = this;
+    return new Promise(async(res, rej) => {
+      try{
+        let myServers = await thisVal.getFileData("servers.json");
+        delete myServers[thisVal.url];
+        const keys = Object.keys(myServers);
+        if(keys.length == 0) throw "No servers";
+        const rand = myServers[keys[keys.length * Math.random() << 0]];
+        const socket = ioclient(rand);
+        socket.emit("Load all servers");
+        socket.on("Load all servers", async (servers) => {
+          thisVal.servers = {...servers, ...myServers};
+          await thisVal.saveFileData("servers.json", thisVal.servers);
+        })
+      }catch(e){
+        thisVal.servers = {
+          [thisVal.url]: thisVal.url
+        }
+        await thisVal.saveFileData("servers.json", thisVal.servers);
+      }
     })
   }
 
@@ -265,10 +300,10 @@ module.exports = class Valoria {
           prvEcdsa: prvKeyJwk
         }
         try {
-          await thisVal.saveFileData('server.json', JSON.stringify({
+          await thisVal.saveFileData('server.json', {
             pubEcdsa: pubKeyJwk,
             prvEcdsa: prvKeyJwk
-          }, null, 2));
+          });
           res();
         } catch (e){
           rej(e)
