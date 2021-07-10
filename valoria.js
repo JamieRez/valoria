@@ -127,6 +127,7 @@ module.exports = class Valoria {
         if(thisVal.bucket){
           await thisVal.bucket.file(path).save(data);
         } else {
+          fs.mkdirSync(__dirname + "/data/");
           await fs.writeFileSync(__dirname + "/data/" + path, data);
         }
         res();
