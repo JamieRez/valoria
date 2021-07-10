@@ -1,4 +1,4 @@
-## Valoria Server
+# Valoria Server
 [![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
 
-# Currently being built, please do not use. 
+## Currently being built, please do not use. 
