@@ -67,7 +67,7 @@ module.exports = class Valoria {
     this.ownerId = process.env.VALORIA_USER_ID;
     this.online = {};
     this.authenticating = {};
-    this.range = null;
+    this.range = []
     this.above = {};
     this.below = {};
     this.servers = {};
@@ -88,6 +88,12 @@ module.exports = class Valoria {
      axios.get(thisVal.server.url); //Validates server url
     }
     thisVal.setupSocketServer();
+    thisVal.app.get('/:path', async(req, res) => {
+      if(req.params.path.length < 1) return;
+      const data = await thisVal.getFileData(req.params.path)
+      console.log(data)
+      res.send(data);
+    })
   }
 
   async getFileData(path){
@@ -131,9 +137,20 @@ module.exports = class Valoria {
   }
 
   async joinServerNetwork(){
+    if(isLocal) return;
     const thisVal = this;
     return new Promise(async(res, rej) => {
-      
+      if(Object.keys(thisVal.above).length == 0 && Object.keys(thisVal.below).length == 0){
+        let servers = {};
+        Object.assign(servers, thisVal.servers);
+        delete servers[thisVal.url];
+        const keys = Object.keys(servers);
+        if(keys.length > 0){
+          const rand = keys[keys.length * Math.random() << 0];
+          const socket = ioclient(rand);
+          socket.emit("Initiate neighbor connection");
+        }
+      }
     })
   }
 
@@ -141,10 +158,15 @@ module.exports = class Valoria {
     const thisVal = this;
     thisVal.io.on("connection", async (socket) => {
 
+      console.log(socket.request);
+
       socket.on("Load all servers", async () => {
         const servers = await this.getFileData("servers.json");
         socket.emit("Load all servers", servers);
       })
+
+      socket.on("Initiate neighbor connection", async () => {
+      });
 
       socket.on("disconnect", () => {
         if(online[socket.userId]) delete online[socket.userId];
@@ -155,6 +177,7 @@ module.exports = class Valoria {
   }
 
   async loadAllServers(){
+    if(isLocal) return;
     const thisVal = this;
     return new Promise(async(res, rej) => {
       try{
@@ -162,18 +185,23 @@ module.exports = class Valoria {
         delete myServers[thisVal.url];
         const keys = Object.keys(myServers);
         if(keys.length == 0) throw "No servers";
-        const rand = myServers[keys[keys.length * Math.random() << 0]];
+        const rand = keys[keys.length * Math.random() << 0];
         const socket = ioclient(rand);
         socket.emit("Load all servers");
         socket.on("Load all servers", async (servers) => {
+          socket.off("Load all servers");
           thisVal.servers = {...servers, ...myServers};
           await thisVal.saveFileData("servers.json", thisVal.servers);
+          res();
         })
       }catch(e){
+        //1st server
+        thisVal.range = [0, 115792089237316195423570985008687907853269984665640564039457584007913129639935]
         thisVal.servers = {
-          [thisVal.url]: thisVal.url
-        }
+          [thisVal.url]: thisVal.range
+        };
         await thisVal.saveFileData("servers.json", thisVal.servers);
+        res();
       }
     })
   }
@@ -186,9 +214,9 @@ module.exports = class Valoria {
         thisVal.server = server;
         const pubEcdsaJwk = server.pubEcdsa;
         const prvEcdsaJwk = server.prvEcdsa;
-        thisVal.range = server.range;
-        thisVal.above = server.above;
-        thisVal.below = server.below;
+        thisVal.range = server.range || [];
+        thisVal.above = server.above || {};
+        thisVal.below = server.below || {};
         const pubEcdsaKey = await subtle.importKey(
           'jwk',
           pubEcdsaJwk,
@@ -348,6 +376,37 @@ module.exports = class Valoria {
       } catch(e){
       }
       res();
+    });
+  }
+
+  async sign (buffer) {
+    const thisVal = this;
+    return new Promise(async (resolve) => {
+      const sig = await subtle.sign(
+        {
+          name: 'ECDSA',
+          hash: 'SHA-384'
+        },
+       thisVal.ECDSAPair.privateKey,
+        buffer,
+      )
+      resolve(sig);
+    });
+  }
+  
+  async verify (sigBuf, msgBuf, pubKey) {
+    const thisVal = this;
+    return new Promise(async (resolve) => {
+      const isValid = await subtle.verify(
+        {
+          name: 'ECDSA',
+          hash: 'SHA-384'
+        },
+        pubKey,
+        sigBuf,
+        msgBuf
+      )
+      resolve(isValid);
     });
   }
 

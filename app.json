@@ -1,7 +1,36 @@
 {
+  "name": "Valoria Server",
+  "description": "Decentralized storage for all, powered by everybody!",
+  "repository": "https://github.com/heroku/node-js-getting-started",
   "buildpacks": [
     {
       "url": "heroku/nodejs"
     }
-  ]
+  ],
+  "env": {
+    "VALORIA_SERVER_SECRET": {
+      "description": "A secret random string used to secure and access the server's private key.",
+      "generator": "secret"
+    },
+    "VALORIA_USER_ID": {
+      "description": "The ID hash of the user that owns this server. (Optional)",
+      "value": "",
+      "required": false
+    },
+    "HEROKU_API_KEY":{
+      "description": "Your Heroku Account API Key. Used to save data on Heroku without connecting Google Cloud Storage. Leave blank if using GCS.",
+      "value": "",
+      "required": false
+    },
+    "GOOGLE_APPLICATION_CREDENTIALS":{
+      "description": "Path to your Google Service Credentials if using GCS. Found at https://console.cloud.google.com/iam-admin/serviceaccounts/create",
+      "value": "./storagekey.json",
+      "required": false
+    },
+    "BUCKET_NAME":{
+      "description": "Name of Bucket to use in Cloud Storage. Will be created automatically if it doesn't already exist.",
+      "value": "Valoria",
+      "required": false
+    }
+  }
 }
