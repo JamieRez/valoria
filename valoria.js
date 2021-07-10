@@ -88,7 +88,7 @@ module.exports = class Valoria {
      axios.get(thisVal.server.url); //Validates server url
     }
     thisVal.setupSocketServer();
-    thisVal.app.get('/:path', async(req, res) => {
+    thisVal.app.get('/data/:path', async(req, res) => {
       if(req.params.path.length < 1) return;
       const data = await thisVal.getFileData(req.params.path)
       console.log(data)
