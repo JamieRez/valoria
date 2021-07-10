@@ -6,7 +6,6 @@ const port = process.env.PORT || '8000';
 
 const Valoria = require('./valoria');
 const valoria = new Valoria(server, app);
-// valoria.test();
 
 app.use(express.static('client'));
 app.set('views', 'client')
