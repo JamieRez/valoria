@@ -10,7 +10,7 @@ const request = require('request');
 const herokuKey = process.env.HEROKU_API_KEY;
 const {Storage} = require('@google-cloud/storage');
 const storage = new Storage();
-const isLocal = process.env.PORT ? true : false;
+const isLocal = process.env.PORT ? false: true;
 const port = process.env.PORT || '8000';
 const ioclient = require("socket.io-client");
 
