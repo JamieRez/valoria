@@ -1,3 +1,4 @@
+const http = require('http');
 const express = require('express');
 const App = express();
 const crypto = require('crypto');
@@ -10,15 +11,18 @@ const request = require('request');
 const herokuKey = process.env.HEROKU_API_KEY;
 const {Storage} = require('@google-cloud/storage');
 const storage = new Storage();
-const isLocal = process.env.PORT ? false: true;
+const isLocal = process.env.PORT ? false : true;
 const port = process.env.PORT || '8000';
 const ioclient = require("socket.io-client");
+const initialServers = require('./servers.json');
 
 const disabledPaths = {
   [__dirname + "/app"]: true,
   // [__dirname + "/node_modules"]: true,
   // [__dirname + ".git"]: true,
 }
+
+const maxDecimal = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
 
 var copyRecursiveSync = function(src, dest) {
   if(src == ".env") return;
@@ -43,11 +47,17 @@ module.exports = class Valoria {
     this.app = app || App;
     this.server = {};
     const thisVal = this;
+    this.app.enable('trust proxy');
     this.app.use(async(req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
       res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
       if(!thisVal.url){
-        thisVal.url = req.protocol + '://' + req.get('host') + req.originalUrl;
+        const url = req.protocol + '://' + req.get('host') + "/";
+        if(url.startsWith('http://localhost')) {
+          next();
+          return;
+        }
+        thisVal.url = url;
         thisVal.server.url = thisVal.url;
         await thisVal.saveFileData('server.json', thisVal.server);
         await thisVal.loadAllServers();
@@ -68,13 +78,16 @@ module.exports = class Valoria {
     this.online = {};
     this.authenticating = {};
     this.range = []
-    this.above = {};
+    this.above = {}
     this.below = {};
     this.servers = {};
+    this.serverConns = {};
+    this.promises = {};
     this.setup();
   }
 
   async setup(){
+
     const thisVal = this;
     if(process.env.GOOGLE_APPLICATION_CREDENTIALS){
       await thisVal.setupCloudStorage();
@@ -84,15 +97,16 @@ module.exports = class Valoria {
     } catch (e){
       await thisVal.generateServerCredentials();
     }
-    if(thisVal.server.url) {
-     axios.get(thisVal.server.url); //Validates server url
-    }
-    thisVal.setupSocketServer();
     thisVal.app.get('/data/:path', async(req, res) => {
       if(req.params.path.length < 1) return;
       const data = await thisVal.getFileData(req.params.path)
-      console.log(data)
       res.send(data);
+    })
+    // if(thisVal.server.url) {
+    //   axios.get(thisVal.server.url + "data/server.json"); //Validates server url
+    // }
+    thisVal.io.on("connection", (socket) => {
+      thisVal.setupSocket(socket);
     })
   }
 
@@ -148,33 +162,76 @@ module.exports = class Valoria {
         const keys = Object.keys(servers);
         if(keys.length > 0){
           const rand = keys[keys.length * Math.random() << 0];
-          const socket = ioclient(rand);
-          socket.emit("Initiate neighbor connection");
+          await thisVal.neighborWithServer(rand);
+          console.log("FINISHED NEIGHBORING WITH THE SERVER!");
         }
       }
     })
   }
 
-  async setupSocketServer(){
+  async neighborWithServer(url){
     const thisVal = this;
-    thisVal.io.on("connection", async (socket) => {
-
-      console.log(socket.request);
-
-      socket.on("Load all servers", async () => {
-        const servers = await this.getFileData("servers.json");
-        socket.emit("Load all servers", servers);
-      })
-
-      socket.on("Initiate neighbor connection", async () => {
-      });
-
-      socket.on("disconnect", () => {
-        if(online[socket.userId]) delete online[socket.userId];
-        if(authenticating[socket.userId]) delete authenticating[socket.userId];
-      })
-
+    return new Promise(async(res, rej) => {
+      const socket = ioclient(url);
+      thisVal.setupSocket(socket);
+      thisVal.serverConns[url] = socket;
+      socket.serverUrl = url;
+      socket.emit("Initiate neighbor connection", {url: thisVal.url});
+      thisVal.promises["Neighbor Connection with " + url] = {res, rej}
     })
+  }
+
+  async setupSocket(socket){
+    const thisVal = this;
+
+    socket.on("Load all servers", async () => {
+      const servers = await this.getFileData("servers.json");
+      socket.emit("Load all servers", servers);
+    })
+
+    socket.on("Initiate neighbor connection", async (d) => {
+      if(!d.url) return;
+      try {
+        await thisVal.verifyServer(socket, d.url);
+        const neighborWillBeAbove = Math.floor(Math.random() * 2) 
+        let thirdNeighbor;
+        let neighborRange;
+        let rangeSize = 0;
+        if(neighborWillBeAbove){
+          thirdNeighbor = thisVal.above[0];
+          rangeSize = (thirdNeighbor.range[1] - thisVal.range[0]) / 2;
+          thisVal.range = [thisVal.range[0], thisVal.range[0] + rangeSize];
+          neighborRange = [thisVal.range[1], thisVal.range[1] + rangeSize];
+          if(!thirdNeighbor && thisVal.below[0] && thisVal.range[1] == maxDecimal){
+            thirdNeighbor = thisVal.below[0];
+          }
+        } else {
+          thirdNeighbor = thisVal.below[0];
+          if(!thirdNeighbor && thisVal.above[0] && thisVal.range[0] == 0){
+            thirdNeighbor = thisVal.above[0];
+          }
+        }
+        socket.emit("Neighbor connected");
+      } catch (e){
+
+      }
+    });
+
+    socket.on("Neighbor connected", () => {
+      thisVal.promises["Neighbor Connection with " + socket.serverUrl].res();
+    })
+
+    socket.on("Sign verification token", async (token) => {
+      if(!thisVal.serverConns[socket.serverUrl]) return;
+      const sig = await thisVal.sign(token);
+      socket.emit("Verify signature", sig);
+    })
+
+    socket.on("disconnect", () => {
+      if(thisVal.online[socket.vId]) delete thisVal.online[socket.vId];
+      if(thisVal.authenticating[socket.vId]) delete thisVal.authenticating[socket.vId];
+    })
+
   }
 
   async loadAllServers(){
@@ -183,27 +240,67 @@ module.exports = class Valoria {
     return new Promise(async(res, rej) => {
       try{
         let myServers = await thisVal.getFileData("servers.json");
+        Object.assign(myServers, initialServers);
         delete myServers[thisVal.url];
         const keys = Object.keys(myServers);
-        if(keys.length == 0) throw "No servers";
+        if(keys.length == 0) throw "No Servers Found"
         const rand = keys[keys.length * Math.random() << 0];
         const socket = ioclient(rand);
         socket.emit("Load all servers");
         socket.on("Load all servers", async (servers) => {
           socket.off("Load all servers");
+          socket.disconnect();
           thisVal.servers = {...servers, ...myServers};
           await thisVal.saveFileData("servers.json", thisVal.servers);
           res();
         })
       }catch(e){
         //1st server
-        thisVal.range = [0, 115792089237316195423570985008687907853269984665640564039457584007913129639935]
+        thisVal.range = [0, maxDecimal]
         thisVal.servers = {
           [thisVal.url]: thisVal.range
         };
         await thisVal.saveFileData("servers.json", thisVal.servers);
         res();
       }
+    })
+  }
+
+  async verifyServer(socket, url){
+    const thisVal = this;
+    return new Promise(async(res, rej) => {
+      const verifToken = await crypto.randomBytes(256);
+      const serverData = (await axios.get(url + "data/server.json")).data;
+      const pubKey = await subtle.importKey(
+        'jwk',
+        serverData.pubEcdsa,
+        {
+          name: 'ECDSA',
+          namedCurve: 'P-384'
+        },
+        true,
+        ['verify']
+      )
+      socket.emit("Sign verification token", verifToken)
+      socket.on("Verify signature", async (sig) => {
+        const isValid = await subtle.verify(
+          {
+            name: "ECDSA",
+            hash: "SHA-384",
+          },
+          pubKey,
+          sig,
+          verifToken
+        )
+        if(isValid) {
+          console.log("VERIFIED " + url);
+          thisVal.serverConns[url] = socket;
+          res()
+        } else {
+          console.log("BAD SIGNATURE");
+          rej();
+        }
+      })
     })
   }
 

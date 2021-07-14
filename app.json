@@ -17,11 +17,6 @@
       "value": "",
       "required": false
     },
-    "HEROKU_API_KEY":{
-      "description": "Your Heroku Account API Key. Used to save data on Heroku without connecting Google Cloud Storage. Leave blank if using GCS.",
-      "value": "",
-      "required": false
-    },
     "GOOGLE_APPLICATION_CREDENTIALS":{
       "description": "Path to your Google Service Credentials if using GCS. Found at https://console.cloud.google.com/iam-admin/serviceaccounts/create",
       "value": "./storagekey.json",
