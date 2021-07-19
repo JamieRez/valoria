@@ -47,6 +47,11 @@ module.exports = class Valoria {
     this.app = app || App;
     this.server = {};
     const thisVal = this;
+    this.io = require('socket.io')(server, {
+      cors: {
+        origin: "*"
+      }
+    });
     this.app.enable('trust proxy');
     this.app.use(async(req, res, next) => {
       res.header("Access-Control-Allow-Origin", "*");
@@ -63,12 +68,10 @@ module.exports = class Valoria {
         await thisVal.loadAllServers();
         await thisVal.joinServerNetwork();
       }
+      // else if(!thisVal.above[0] || !thisVal.below[0]){
+      //   await thisVal.joinServerNetwork();
+      // }
       next();
-    });
-    this.io = require('socket.io')(server, {
-      cors: {
-        origin: "*"
-      }
     });
     this.ECDSAPair = {
       publicKey: '',
@@ -89,6 +92,9 @@ module.exports = class Valoria {
   async setup(){
 
     const thisVal = this;
+    thisVal.io.on("connection", (socket) => {
+      thisVal.setupSocket(socket);
+    })
     if(process.env.GOOGLE_APPLICATION_CREDENTIALS){
       await thisVal.setupCloudStorage();
     }
@@ -105,9 +111,6 @@ module.exports = class Valoria {
     // if(thisVal.server.url) {
     //   axios.get(thisVal.server.url + "data/server.json"); //Validates server url
     // }
-    thisVal.io.on("connection", (socket) => {
-      thisVal.setupSocket(socket);
-    })
   }
 
   async getFileData(path){
@@ -120,13 +123,13 @@ module.exports = class Valoria {
             .createReadStream()
             .on('data', d => (buf += d))
             .on('end', () => res(JSON.parse(buf)))
-            .on('error', e => rej(e))
+            .on('error', e => res(null))
         } else {
           const data = await fs.readFileSync(__dirname + "/data/" + path, "utf-8");
           res(JSON.parse(data));
         }
       } catch(e){
-        rej(e);
+        res(null);
       }
     })
   }
@@ -140,6 +143,7 @@ module.exports = class Valoria {
       try{
         if(thisVal.bucket){
           await thisVal.bucket.file(path).save(data);
+          thisVal.bucket.file(path).setMetadata({ cacheControl: 'no-store'})
         } else {
           fs.mkdirSync(__dirname + "/data/");
           await fs.writeFileSync(__dirname + "/data/" + path, data);
@@ -159,11 +163,18 @@ module.exports = class Valoria {
         let servers = {};
         Object.assign(servers, thisVal.servers);
         delete servers[thisVal.url];
+        console.log("GOTTA JOIN SERVER NETWORK FROM THESE RANDOM SERVERS");
+        console.log(servers);
         const keys = Object.keys(servers);
         if(keys.length > 0){
           const rand = keys[keys.length * Math.random() << 0];
+          console.log("GOING TO NEIGHBOR WITH");
+          console.log(rand)
           await thisVal.neighborWithServer(rand);
           console.log("FINISHED NEIGHBORING WITH THE SERVER!");
+          res();
+        } else {
+          res();
         }
       }
     })
@@ -176,6 +187,7 @@ module.exports = class Valoria {
       thisVal.setupSocket(socket);
       thisVal.serverConns[url] = socket;
       socket.serverUrl = url;
+      console.log("Initiating server connection");
       socket.emit("Initiate neighbor connection", {url: thisVal.url});
       thisVal.promises["Neighbor Connection with " + url] = {res, rej}
     })
@@ -191,26 +203,12 @@ module.exports = class Valoria {
 
     socket.on("Initiate neighbor connection", async (d) => {
       if(!d.url) return;
+      console.log("GOT A NEW CONNECTION THAT WANTS TO BE A NEIGHBOR");
+      console.log(d);
       try {
         await thisVal.verifyServer(socket, d.url);
-        const neighborWillBeAbove = Math.floor(Math.random() * 2) 
-        let thirdNeighbor;
-        let neighborRange;
-        let rangeSize = 0;
-        if(neighborWillBeAbove){
-          thirdNeighbor = thisVal.above[0];
-          rangeSize = (thirdNeighbor.range[1] - thisVal.range[0]) / 2;
-          thisVal.range = [thisVal.range[0], thisVal.range[0] + rangeSize];
-          neighborRange = [thisVal.range[1], thisVal.range[1] + rangeSize];
-          if(!thirdNeighbor && thisVal.below[0] && thisVal.range[1] == maxDecimal){
-            thirdNeighbor = thisVal.below[0];
-          }
-        } else {
-          thirdNeighbor = thisVal.below[0];
-          if(!thirdNeighbor && thisVal.above[0] && thisVal.range[0] == 0){
-            thirdNeighbor = thisVal.above[0];
-          }
-        }
+        console.log("VERIFIED");
+        await thisVal.addServerNeighbor(d.url);
         socket.emit("Neighbor connected");
       } catch (e){
 
@@ -227,6 +225,42 @@ module.exports = class Valoria {
       socket.emit("Verify signature", sig);
     })
 
+    socket.on("New neighbor and range", async (neighbors) => {
+      if(!this.serverConns[socket.serverUrl]) return;
+      let myIndex;
+      let willConnect = true;
+      let nServers = {};
+      neighbors.forEach(async (n, i) => {
+        if(!n.url) return;
+        if(n.url !== thisVal.url){
+          if(!this.serverConns[socket.serverUrl]){
+            const socket = ioclient(n.url);
+            thisVal.setupSocket(socket);
+            try {
+              await thisVal.verifyServer(socket, n.url);
+              nServers[n.url] = n.range;
+            } catch(e){
+              console.log("BAD NEIGHBOR. SHOULD TOTALLY REPORT IT");
+              willConnect = false;
+            }
+          } else {
+            nServers[n.url] = n.range;
+          }
+        } else {
+          myIndex = i;
+          nServers[n.url] = n.range;
+        }
+        if((i == neighbors.length - 1) && willConnect){
+          thisVal.server.range = neighbors[myIndex].range;
+          thisVal.server.above[0] = neighbors[myIndex+1] || thisVal.server.above[0];
+          thisVal.server.below[0] =  neighbors[myIndex-1] || thisVal.server.below[0];
+          await thisVal.saveFileData("server.json", thisVal.server)
+          Object.assign(thisVal.servers, nServers);
+          await thisVal.saveFileData("servers.json", thisVal.servers)
+        }
+      })
+    })
+
     socket.on("disconnect", () => {
       if(thisVal.online[socket.vId]) delete thisVal.online[socket.vId];
       if(thisVal.authenticating[socket.vId]) delete thisVal.authenticating[socket.vId];
@@ -234,12 +268,76 @@ module.exports = class Valoria {
 
   }
 
+  async addServerNeighbor(url){
+    const thisVal = this;
+    return new Promise(async (res, rej) => {
+      const neighborWillBeAbove = Math.floor(Math.random() * 2);
+      let neighbors = [];
+      let rangeSize = 0;
+      let thirdNeighbor;
+      let min = thisVal.range[0];
+      let max = thisVal.range[1];
+      console.log("GOING ABOVE: ", neighborWillBeAbove);
+      if(neighborWillBeAbove){
+        if(thisVal.above[0]){
+          thirdNeighbor = thisVal.above[0];
+          neighbors = [{url: thisVal.url}, {url}, {url: thirdNeighbor?.url}]
+        } else if(thisVal.range[1] == maxDecimal){
+          thirdNeighbor = thisVal.below[0];
+          neighbors = [{url: thirdNeighbor?.url}, {url: thisVal.url}, {url}]
+        }
+      } else {
+        if(thisVal.below[0]){
+          thirdNeighbor = thisVal.below[0];
+          neighbors = [{url: thirdNeighbor?.url}, {url}, {url: thisVal.url}]
+        } else if(thisVal.range[0] == 0){
+          thirdNeighbor = thisVal.above[0];
+          neighbors = [{url}, {url: thisVal.url}, {url: thirdNeighbor?.url}]
+        }
+      }
+      const nullIndex = neighbors.findIndex(n => n.url === undefined);
+      if(nullIndex !== -1){
+        neighbors.splice(nullIndex, 1);
+      }
+      console.log("Range: ", thisVal.range);
+      console.log("Above: ", thisVal.above);
+      console.log("Below: ", thisVal.below)
+      if(thirdNeighbor?.range){
+        if(thirdNeighbor.range[0] < min) min = thirdNeighbor.range[0];
+        if(thirdNeighbor.range[1] > max) max = thirdNeighbor.range[0];
+      }
+      rangeSize = (max - min) / (thirdNeighbor?.url ? 3 : 2);
+      console.log(neighbors)
+      neighbors[0].range = [min, min + rangeSize];
+      neighbors[1].range = [neighbors[0].range[1], thirdNeighbor?.range ? (neighbors[0].range[1] + rangeSize) : max];
+      if(thirdNeighbor?.range){
+        neighbors[2].range = [neighbors[1].range[1], max];
+      }
+      neighbors.forEach(async (n, i) => {
+        if(!n || !n.url) return;
+        console.log(`${i}: ${n.url}`)
+        thisVal.servers[n.url] = n.range;
+        if(n.url !== thisVal.url){
+          thisVal.serverConns[n.url].emit("New neighbor and range", neighbors);
+        } else {
+          thisVal.server.range = n.range;
+          thisVal.server.above[0] = neighbors[i+1] || thisVal.server.above[0];
+          thisVal.server.below[0] =  neighbors[i-1] || thisVal.server.below[0];
+          await thisVal.saveFileData("server.json", thisVal.server)
+        }
+        if(i == neighbors.length - 1){
+          await thisVal.saveFileData("servers.json", thisVal.servers);
+        }
+      })
+    })
+  }
+
   async loadAllServers(){
     if(isLocal) return;
     const thisVal = this;
     return new Promise(async(res, rej) => {
       try{
-        let myServers = await thisVal.getFileData("servers.json");
+        let myServers = (await thisVal.getFileData("servers.json")) || {};
         Object.assign(myServers, initialServers);
         delete myServers[thisVal.url];
         const keys = Object.keys(myServers);
@@ -248,6 +346,7 @@ module.exports = class Valoria {
         const socket = ioclient(rand);
         socket.emit("Load all servers");
         socket.on("Load all servers", async (servers) => {
+          console.log("loaded servers");
           socket.off("Load all servers");
           socket.disconnect();
           thisVal.servers = {...servers, ...myServers};
@@ -255,6 +354,8 @@ module.exports = class Valoria {
           res();
         })
       }catch(e){
+        console.log(e);
+        console.log("COULD NOT FIND ANY OTHER SERVERS :(")
         //1st server
         thisVal.range = [0, maxDecimal]
         thisVal.servers = {
@@ -269,38 +370,43 @@ module.exports = class Valoria {
   async verifyServer(socket, url){
     const thisVal = this;
     return new Promise(async(res, rej) => {
-      const verifToken = await crypto.randomBytes(256);
-      const serverData = (await axios.get(url + "data/server.json")).data;
-      const pubKey = await subtle.importKey(
-        'jwk',
-        serverData.pubEcdsa,
-        {
-          name: 'ECDSA',
-          namedCurve: 'P-384'
-        },
-        true,
-        ['verify']
-      )
-      socket.emit("Sign verification token", verifToken)
-      socket.on("Verify signature", async (sig) => {
-        const isValid = await subtle.verify(
+      if(thisVal.serverConns[url]){
+        res();
+      } else {
+        const verifToken = await crypto.randomBytes(256);
+        const serverData = (await axios.get(url + "data/server.json")).data;
+        const pubKey = await subtle.importKey(
+          'jwk',
+          serverData.pubEcdsa,
           {
-            name: "ECDSA",
-            hash: "SHA-384",
+            name: 'ECDSA',
+            namedCurve: 'P-384'
           },
-          pubKey,
-          sig,
-          verifToken
+          true,
+          ['verify']
         )
-        if(isValid) {
-          console.log("VERIFIED " + url);
-          thisVal.serverConns[url] = socket;
-          res()
-        } else {
-          console.log("BAD SIGNATURE");
-          rej();
-        }
-      })
+        socket.emit("Sign verification token", verifToken)
+        socket.on("Verify signature", async (sig) => {
+          const isValid = await subtle.verify(
+            {
+              name: "ECDSA",
+              hash: "SHA-384",
+            },
+            pubKey,
+            sig,
+            verifToken
+          )
+          if(isValid) {
+            console.log("VERIFIED " + url);
+            thisVal.serverConns[url] = socket;
+            socket.serverUrl = url;
+            res()
+          } else {
+            console.log("BAD SIGNATURE");
+            rej();
+          }
+        })
+      }
     })
   }
 
@@ -309,7 +415,11 @@ module.exports = class Valoria {
     return new Promise(async (res, rej) => {
       try {
         const server = await thisVal.getFileData("server.json");
+        if(!server) throw "Server not found"
         thisVal.server = server;
+        thisVal.server.above = server.above || {};
+        thisVal.server.below = server.below || {};
+        thisVal.server.range = server.range || [];
         const pubEcdsaJwk = server.pubEcdsa;
         const prvEcdsaJwk = server.prvEcdsa;
         thisVal.range = server.range || [];
